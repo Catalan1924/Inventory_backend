@@ -18,7 +18,8 @@ DEBUG = os.environ.get("DEBUG", "True") == "True"
 
 ALLOWED_HOSTS = os.environ.get(
     "ALLOWED_HOSTS",
-    "127.0.0.1,localhost,inventory-backend-1-kcep.onrender.com"
+    "127.0.0.1,localhost"
+    "https://inventory-backend-1-kcep.onrender.com"
 ).split(",")
 
 
@@ -26,17 +27,20 @@ ALLOWED_HOSTS = os.environ.get(
 # Application definition
 
 INSTALLED_APPS = [
-    'django.contrib.admin',
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
-    'django.contrib.sessions',
-    'django.contrib.messages',
-    'django.contrib.staticfiles',
-    'inventory',
-    'rest_framework',
-    'corsheaders',
-    "rest_framework.authtoken",    
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+
+    "rest_framework",
+    "rest_framework.authtoken",
+    "corsheaders",
+
+    "inventory",
 ]
+
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
