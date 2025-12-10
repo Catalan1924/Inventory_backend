@@ -1,9 +1,8 @@
 import os
 
-from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.models import User
-from django.db.models import Count
+from django.db.models import Sum
 from rest_framework import permissions, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
@@ -18,18 +17,16 @@ from .serializers import (
     UserSerializer,
 )
 
-User = get_user_model()
+# -------------------------------------------------------------------
+# CONFIG
+# -------------------------------------------------------------------
 
-# Read the admin signup key from settings/env
-ADMIN_SIGNUP_KEY = getattr(settings, "ADMIN_SIGNUP_KEY", "") or os.environ.get(
-    "ADMIN_SIGNUP_KEY", ""
-)
+# Strip spaces to avoid mismatch because of trailing spaces in env
+ADMIN_SIGNUP_KEY = (os.environ.get("ADMIN_SIGNUP_KEY") or "").strip()
 
 
-def get_user_role(user: User) -> str:
-    """
-    Helper to map Django flags to a simple role string.
-    """
+def _get_role_from_user(user: User) -> str:
+    """Return a simple string role for the frontend."""
     if user.is_superuser:
         return "Admin"
     if user.is_staff:
@@ -41,53 +38,87 @@ def get_user_role(user: User) -> str:
 # AUTH VIEWS
 # -------------------------------------------------------------------
 
-
 class RegisterView(APIView):
+    """
+    Register a new user.
+
+    - Normal user: send username, password, (optional) email.
+    - Admin: additionally send role="Admin" and admin_key=<correct key>.
+
+    If role="Admin" is requested but admin_key is wrong,
+    return 403 with an error instead of silently creating a normal user.
+    """
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
         username = request.data.get("username")
-        email = request.data.get("email")
+        email = request.data.get("email", "")
         password = request.data.get("password")
         requested_role = request.data.get("role", "User")
-        admin_key = request.data.get("admin_key")
+        admin_key = (request.data.get("admin_key") or "").strip()
 
+        # Basic validation
         if not username or not password:
             return Response(
-                {"error": "Username and password are required"},
+                {"error": "Username and password are required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         if User.objects.filter(username=username).exists():
             return Response(
-                {"error": "Username already exists"},
+                {"error": "Username already exists."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user = User.objects.create_user(
-            username=username,
-            email=email,
-            password=password,
-        )
+        # Normalize role
+        requested_role = requested_role or "User"
+        if requested_role not in ("Admin", "Staff", "User"):
+            requested_role = "User"
 
-        # --- ADMIN / STAFF PROMOTION LOGIC ---
-        # Only if they REQUEST Admin AND provide the correct ADMIN_SIGNUP_KEY.
-        # Otherwise they stay a normal User.
+        # If they are asking for Admin, validate the admin key
         if requested_role == "Admin":
-            if ADMIN_SIGNUP_KEY and admin_key == ADMIN_SIGNUP_KEY:
-                user.is_staff = True
-                user.is_superuser = True
-                user.save()
-            else:
-                # optional: you can also return 400 here, but we just create a normal user
-                pass
+            if not ADMIN_SIGNUP_KEY:
+                # Backend misconfigured – make it very clear
+                return Response(
+                    {
+                        "error": (
+                            "Server is not configured with ADMIN_SIGNUP_KEY. "
+                            "Admin registration is disabled."
+                        )
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
 
+            if not admin_key:
+                return Response(
+                    {"error": "Admin key is required to create an admin account."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if admin_key != ADMIN_SIGNUP_KEY:
+                return Response(
+                    {"error": "Invalid admin key. Account was not created."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        # Create the user
+        user = User.objects.create_user(username=username, email=email, password=password)
+
+        # Apply role flags
+        if requested_role == "Admin":
+            user.is_staff = True
+            user.is_superuser = True
+        elif requested_role == "Staff":
+            user.is_staff = True
+        user.save()
+
+        # Auth token
         token, _ = Token.objects.get_or_create(user=user)
-        role = get_user_role(user)
+        role = _get_role_from_user(user)
 
         return Response(
             {
-                "message": "User registered successfully",
+                "message": "User registered successfully.",
                 "token": token.key,
                 "username": user.username,
                 "role": role,
@@ -97,25 +128,35 @@ class RegisterView(APIView):
 
 
 class LoginView(APIView):
+    """
+    Login with username + password.
+    Returns token, username and role ("Admin", "Staff", "User").
+    """
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
         username = request.data.get("username")
         password = request.data.get("password")
 
+        if not username or not password:
+            return Response(
+                {"error": "Username and password are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         user = authenticate(username=username, password=password)
         if user is None:
             return Response(
-                {"error": "Invalid username or password"},
+                {"error": "Invalid username or password."},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
         token, _ = Token.objects.get_or_create(user=user)
-        role = get_user_role(user)
+        role = _get_role_from_user(user)
 
         return Response(
             {
-                "message": "Login successful",
+                "message": "Login successful.",
                 "token": token.key,
                 "username": user.username,
                 "role": role,
@@ -126,9 +167,8 @@ class LoginView(APIView):
 
 class LogoutView(APIView):
     """
-    Simple token logout: delete the current auth token.
+    Simple token logout: deletes the current token.
     """
-
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -136,21 +176,19 @@ class LogoutView(APIView):
             request.user.auth_token.delete()
         except Token.DoesNotExist:
             pass
-        return Response({"message": "Logged out"}, status=status.HTTP_200_OK)
+        return Response({"message": "Logged out successfully."})
 
+
+# -------------------------------------------------------------------
+# PROFILE / PASSWORD
+# -------------------------------------------------------------------
 
 class ProfileView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        user = request.user
-        data = {
-            "username": user.username,
-            "email": user.email,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-        }
-        return Response(data)
+        serializer = UserSerializer(request.user)
+        return Response(serializer.data)
 
     def put(self, request):
         user = request.user
@@ -158,7 +196,7 @@ class ProfileView(APIView):
         user.first_name = request.data.get("first_name", user.first_name)
         user.last_name = request.data.get("last_name", user.last_name)
         user.save()
-        return Response({"message": "Profile updated"})
+        return Response({"message": "Profile updated."})
 
 
 class ChangePasswordView(APIView):
@@ -168,64 +206,40 @@ class ChangePasswordView(APIView):
         old_password = request.data.get("old_password")
         new_password = request.data.get("new_password")
 
-        if not request.user.check_password(old_password):
+        if not old_password or not new_password:
             return Response(
-                {"error": "Old password is incorrect"},
+                {"error": "Old password and new password are required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not new_password:
+        user = request.user
+        if not user.check_password(old_password):
             return Response(
-                {"error": "New password is required"},
+                {"error": "Old password is incorrect."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        request.user.set_password(new_password)
-        request.user.save()
-        return Response({"message": "Password changed"})
+        user.set_password(new_password)
+        user.save()
+        return Response({"message": "Password changed successfully."})
 
+
+# -------------------------------------------------------------------
+# USERS LIST (ADMIN ONLY)
+# -------------------------------------------------------------------
 
 class UsersListView(APIView):
-    """
-    Only Admins can view all users.
-    """
-
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
-        if not request.user.is_superuser:
-            return Response(
-                {"error": "You are not allowed to view users."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
         users = User.objects.all().order_by("-date_joined")
         serializer = UserSerializer(users, many=True)
         return Response(serializer.data)
 
 
-@api_view(["GET"])
-@permission_classes([permissions.AllowAny])
-def health_check(request):
-    return Response({"status": "ok"})
-
-
-@api_view(["GET"])
-@permission_classes([permissions.IsAuthenticated])
-def whoami(request):
-    user = request.user
-    return Response(
-        {
-            "username": user.username,
-            "role": get_user_role(user),
-        }
-    )
-
-
 # -------------------------------------------------------------------
-# VIEWSETS FOR PRODUCTS, SUPPLIERS, ORDERS
-# (use your existing logic if you already had these – here is a basic version)
+# VIEWSETS (Products, Suppliers, Orders)
 # -------------------------------------------------------------------
-
 
 class SupplierViewSet(viewsets.ModelViewSet):
     queryset = Supplier.objects.all().order_by("name")
@@ -240,10 +254,29 @@ class ProductViewSet(viewsets.ModelViewSet):
 
 
 class OrderViewSet(viewsets.ModelViewSet):
-    queryset = (
-        Order.objects.select_related("product")
-        .all()
-        .order_by("-created_at")
-    )
+    queryset = Order.objects.select_related("product").all().order_by("-created_at")
     serializer_class = OrderSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+
+# -------------------------------------------------------------------
+# MISC ENDPOINTS
+# -------------------------------------------------------------------
+
+@api_view(["GET"])
+@permission_classes([permissions.AllowAny])
+def health_check(request):
+    return Response({"status": "ok"})
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def whoami(request):
+    user = request.user
+    return Response(
+        {
+            "username": user.username,
+            "email": user.email,
+            "role": _get_role_from_user(user),
+        }
+    )
