@@ -187,7 +187,7 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.AllowAny",
     ],
 }
-
+ADMIN_SIGNUP_KEY = os.environ.get("ADMIN_SIGNUP_KEY", "my-local-admin-key")
 # -------------------------
 # OPTIONAL: simple logging to console for debugging deploys
 # -------------------------
