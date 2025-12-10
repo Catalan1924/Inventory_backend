@@ -16,12 +16,6 @@ from .serializers import (
     OrderSerializer,
     UserSerializer,
 )
-
-# -------------------------------------------------------------------
-# CONFIG
-# -------------------------------------------------------------------
-
-# Strip spaces to avoid mismatch because of trailing spaces in env
 ADMIN_SIGNUP_KEY = (os.environ.get("ADMIN_SIGNUP_KEY") or "").strip()
 
 
@@ -32,12 +26,6 @@ def _get_role_from_user(user: User) -> str:
     if user.is_staff:
         return "Staff"
     return "User"
-
-
-# -------------------------------------------------------------------
-# AUTH VIEWS
-# -------------------------------------------------------------------
-
 class RegisterView(APIView):
     """
     Register a new user.
@@ -57,7 +45,6 @@ class RegisterView(APIView):
         requested_role = request.data.get("role", "User")
         admin_key = (request.data.get("admin_key") or "").strip()
 
-        # Basic validation
         if not username or not password:
             return Response(
                 {"error": "Username and password are required."},
@@ -70,15 +57,14 @@ class RegisterView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Normalize role
         requested_role = requested_role or "User"
         if requested_role not in ("Admin", "Staff", "User"):
             requested_role = "User"
 
-        # If they are asking for Admin, validate the admin key
+
         if requested_role == "Admin":
             if not ADMIN_SIGNUP_KEY:
-                # Backend misconfigured – make it very clear
+
                 return Response(
                     {
                         "error": (
@@ -101,10 +87,9 @@ class RegisterView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-        # Create the user
+
         user = User.objects.create_user(username=username, email=email, password=password)
 
-        # Apply role flags
         if requested_role == "Admin":
             user.is_staff = True
             user.is_superuser = True
@@ -112,7 +97,6 @@ class RegisterView(APIView):
             user.is_staff = True
         user.save()
 
-        # Auth token
         token, _ = Token.objects.get_or_create(user=user)
         role = _get_role_from_user(user)
 
@@ -177,12 +161,6 @@ class LogoutView(APIView):
         except Token.DoesNotExist:
             pass
         return Response({"message": "Logged out successfully."})
-
-
-# -------------------------------------------------------------------
-# PROFILE / PASSWORD
-# -------------------------------------------------------------------
-
 class ProfileView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -222,12 +200,6 @@ class ChangePasswordView(APIView):
         user.set_password(new_password)
         user.save()
         return Response({"message": "Password changed successfully."})
-
-
-# -------------------------------------------------------------------
-# USERS LIST (ADMIN ONLY)
-# -------------------------------------------------------------------
-
 class UsersListView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
@@ -235,12 +207,6 @@ class UsersListView(APIView):
         users = User.objects.all().order_by("-date_joined")
         serializer = UserSerializer(users, many=True)
         return Response(serializer.data)
-
-
-# -------------------------------------------------------------------
-# VIEWSETS (Products, Suppliers, Orders)
-# -------------------------------------------------------------------
-
 class SupplierViewSet(viewsets.ModelViewSet):
     queryset = Supplier.objects.all().order_by("name")
     serializer_class = SupplierSerializer
@@ -257,12 +223,6 @@ class OrderViewSet(viewsets.ModelViewSet):
     queryset = Order.objects.select_related("product").all().order_by("-created_at")
     serializer_class = OrderSerializer
     permission_classes = [permissions.IsAuthenticated]
-
-
-# -------------------------------------------------------------------
-# MISC ENDPOINTS
-# -------------------------------------------------------------------
-
 @api_view(["GET"])
 @permission_classes([permissions.AllowAny])
 def health_check(request):
